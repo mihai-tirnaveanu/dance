@@ -3,5 +3,5 @@ export const CONFIG = {
   owner: 'mihai-tirnaveanu',
   repo: 'dance-video',
   branch: 'main',
-  version: '1.0.0',
+  version: '1.0.1',
 };

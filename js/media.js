@@ -50,6 +50,12 @@ export async function putThumb(item, blob) {
   if (!thumbUrls.has(item.id)) thumbUrls.set(item.id, URL.createObjectURL(blob));
 }
 
+/** Keep the original file of a clip uploaded from this device, so it plays without downloading it again. */
+export async function putVideo(item, blob) {
+  const cache = await openCache(MEDIA_CACHE);
+  if (cache) await cache.put(keyFor(item.path), new Response(blob, { headers: { 'Content-Type': item.mime || 'video/mp4' } })).catch(() => {});
+}
+
 export async function isVideoCached(item) {
   const cache = await openCache(MEDIA_CACHE);
   return !!(cache && (await cache.match(keyFor(item.path))));

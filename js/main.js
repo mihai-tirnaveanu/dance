@@ -971,6 +971,7 @@ async function processUploads() {
         added: new Date().toISOString(), dur: Math.round((meta.dur || 0) * 100) / 100, w: meta.w || 0, h: meta.h || 0, size: f.size,
       };
       if (meta.thumb) await media.putThumb(item, meta.thumb);
+      await media.putVideo(item, f);
       const ops = [{ t: 'mset', id, v: item }];
       if (job.catId && store.state.cats[job.catId]) ops.push({ t: 'ins', l: 'c:' + job.catId, id, i: 0 });
       store.dispatch({ t: 'bulk', ops }, { undoable: false });
