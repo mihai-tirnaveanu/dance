@@ -3,6 +3,7 @@ import { h, icon, setChildren, clips, plural, fmtDur, fmtBytes, fmtDay, fmtDateT
 import { GitHub, isNetworkError } from './gh.js';
 import { Store } from './store.js';
 import * as media from './media.js';
+import * as convert from './convert.js';
 import { sheet, dialog, confirmDialog, toast, pushOverlay, dismissAll, overlayOpen } from './ui.js';
 import { setupDnd } from './dnd.js';
 import { openPlayer, refreshPlayer, playerOpen } from './player.js';
@@ -10,7 +11,7 @@ import qrcode from '../vendor/qrcode.mjs';
 
 const COLORS = ['#ff6b4a', '#ec4f8f', '#35b5ac', '#f3b443', '#9a7bff', '#4fa7f0', '#9ccf63', '#dcb48c'];
 const EMOJIS = ['', '💃', '🕺', '🔥', '⭐', '💜', '❤️', '🌙', '🌀', '👣', '🎯', '🏆', '🎵'];
-const MAX_UPLOAD = 95 * 1024 * 1024;
+const MAX_UPLOAD = convert.MAX_UPLOAD;
 
 const settings = Object.assign({ cols: 3, sortAll: 'new', sortInbox: 'new' }, lsGet('dansuri:settings', {}));
 const saveSettings = () => lsSet('dansuri:settings', settings);
@@ -595,7 +596,7 @@ function mediaHeader(it) {
   return h('div', { class: 'media-head' }, img,
     h('div', { class: 'mh-text' },
       h('p', { class: 'mh-name' }, it.name || 'Clip fără nume'),
-      h('p', { class: 'mh-meta' }, `${fmtDur(it.dur)}, primit pe ${fmtDateTime(it.date)}`),
+      h('p', { class: 'mh-meta' }, `${fmtDur(it.dur)}, primit pe ${fmtDateTime(it.date)}` + (it.src ? `, copie ${Math.min(it.w, it.h)}p din ${Math.min(it.src.w, it.src.h) >= 2160 ? '4K' : `${it.src.w}×${it.src.h}`}` : '')),
       h('p', { class: 'mh-meta' }, cats ? `În: ${cats}` : 'Nesortat')));
 }
 
@@ -915,6 +916,7 @@ async function downloadMany(ids, label) {
 
 // ---------------------------------------------------------------- uploads
 const uploads = { items: [], running: false, expanded: false };
+app.uploads = uploads;
 
 function uploadTarget() {
   const r = route();
@@ -943,9 +945,7 @@ async function processUploads() {
     try {
       job.status = 'prep'; paint();
       const f = job.file;
-      if (f.size > MAX_UPLOAD) throw new Error(`are ${fmtBytes(f.size)}; GitHub primește fișiere de maximum 100 MB.`);
-      const hash = await media.sha256Hex(f);
-      const id = hash.slice(0, 16);
+      const id = await media.fileId(f);
       const existing = store.state.media[id];
       if (existing) {
         const ops = [];
@@ -955,23 +955,41 @@ async function processUploads() {
         job.status = 'dup'; paint();
         continue;
       }
-      const meta = await media.probeVideo(f);
-      const ext = media.extFor(f);
+      // 4K or too big for GitHub: make a 1080p copy on this device first.
+      let blob = f, mime = f.type || 'video/mp4', ext = media.extFor(f), conv = null;
+      const info = await convert.inspect(f);
+      if (convert.shouldConvert(info, f.size)) {
+        job.status = 'convert'; job.progress = 0; paint();
+        try {
+          conv = await convert.convert(f, { onProgress: (p) => { job.progress = p; paint(); } });
+          blob = conv.blob; mime = 'video/mp4'; ext = 'mp4';
+        } catch (e) {
+          console.warn('conversion failed', e);
+          if (f.size > MAX_UPLOAD) throw new Error(`nu s-a putut converti (${e.message}), iar originalul are ${fmtBytes(f.size)}, peste limita GitHub de 100 MB.`);
+          job.note = 'trimis original';
+        }
+      } else if (f.size > MAX_UPLOAD) {
+        throw new Error(`are ${fmtBytes(f.size)}; GitHub primește fișiere de maximum 100 MB.`);
+      }
+      job.status = 'prep'; job.progress = 0; paint();
+      const meta = await media.probeVideo(blob);
       const path = `media/${id}.${ext}`;
       const thumbPath = meta.thumb ? `thumbs/${id}.jpg` : null;
       job.status = 'upload'; paint();
-      const videoSha = await app.gh.createBlob(f, { onProgress: (l, t) => { job.progress = l / t; paint(); } });
+      const videoSha = await app.gh.createBlob(blob, { onProgress: (l, t) => { job.progress = l / t; paint(); } });
       const changes = [{ path, sha: videoSha }];
       if (meta.thumb) changes.push({ path: thumbPath, sha: await app.gh.createBlob(meta.thumb) });
       job.status = 'commit'; paint();
       await app.gh.commit(changes, `Adaugă ${f.name}`);
       const { date, seq } = media.dateFromName(f.name, f.lastModified);
       const item = {
-        id, type: 'video', path, thumb: thumbPath, mime: f.type || 'video/mp4', name: '', notes: '', orig: f.name, date, seq,
-        added: new Date().toISOString(), dur: Math.round((meta.dur || 0) * 100) / 100, w: meta.w || 0, h: meta.h || 0, size: f.size,
+        id, type: 'video', path, thumb: thumbPath, mime, name: '', notes: '', orig: f.name, date, seq,
+        added: new Date().toISOString(), dur: Math.round((meta.dur || info?.dur || 0) * 100) / 100,
+        w: meta.w || conv?.width || 0, h: meta.h || conv?.height || 0, size: blob.size,
       };
+      if (conv) item.src = { w: info.width, h: info.height, size: f.size };
       if (meta.thumb) await media.putThumb(item, meta.thumb);
-      await media.putVideo(item, f);
+      await media.putVideo(item, blob);
       const ops = [{ t: 'mset', id, v: item }];
       if (job.catId && store.state.cats[job.catId]) ops.push({ t: 'ins', l: 'c:' + job.catId, id, i: 0 });
       store.dispatch({ t: 'bulk', ops }, { undoable: false });
@@ -999,13 +1017,15 @@ function renderUploads() {
   const items = uploads.items;
   if (!items.length) { box.hidden = true; return; }
   box.hidden = false;
-  const active = items.filter((j) => ['waiting', 'prep', 'upload', 'commit'].includes(j.status));
+  const active = items.filter((j) => ['waiting', 'prep', 'convert', 'upload', 'commit'].includes(j.status));
   const done = items.filter((j) => j.status === 'done' || j.status === 'dup').length;
   const failed = items.filter((j) => j.status === 'error');
-  const totalProgress = items.reduce((a, j) => a + (j.status === 'done' || j.status === 'dup' || j.status === 'error' ? 1 : j.progress || 0), 0) / items.length;
+  const totalProgress = items.reduce((a, j) => a + (['done', 'dup', 'error'].includes(j.status) ? 1 : j.status === 'convert' ? (j.progress || 0) * 0.6 : j.status === 'upload' ? 0.6 + (j.progress || 0) * 0.4 : 0), 0) / items.length;
   const target = items.find((j) => j.catId)?.catId;
-  const label = active.length ? `Se încarcă ${Math.min(done + failed.length + 1, items.length)} din ${items.length}` : failed.length ? `${clips(failed.length)} nu s-au încărcat` : `Gata: ${clips(done)} ${done === 1 ? 'încărcat' : 'încărcate'}`;
-  const statusText = (j) => ({ waiting: 'în așteptare', prep: 'se pregătește', upload: `${Math.round(j.progress * 100)}%`, commit: 'se salvează', done: 'încărcat', dup: 'există deja', error: 'eroare: ' + j.error }[j.status]);
+  const current = items.find((j) => ['prep', 'convert', 'upload', 'commit'].includes(j.status));
+  const nth = `${Math.min(done + failed.length + 1, items.length)} din ${items.length}`;
+  const label = active.length ? (current?.status === 'convert' ? `Se convertește la 1080p (${nth})` : `Se încarcă ${nth}`) : failed.length ? `${clips(failed.length)} nu s-au încărcat` : `Gata: ${clips(done)} ${done === 1 ? 'încărcat' : 'încărcate'}`;
+  const statusText = (j) => ({ waiting: 'în așteptare', prep: 'se pregătește', convert: `se convertește la 1080p ${Math.round(j.progress * 100)}%`, upload: `se încarcă ${Math.round(j.progress * 100)}%`, commit: 'se salvează', done: j.note ? 'încărcat (' + j.note + ')' : 'încărcat', dup: 'există deja', error: 'eroare: ' + j.error }[j.status]);
   setChildren(box,
     h('div', { class: 'up-head' },
       h('button', { class: 'up-toggle', 'aria-expanded': String(uploads.expanded), onclick: () => { uploads.expanded = !uploads.expanded; renderUploads(); } },
@@ -1228,19 +1248,22 @@ function connect() {
 
 function registerSW() {
   if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
+  // Reload only after the person chose "Actualizează", never on the first install.
+  let updateRequested = false;
   navigator.serviceWorker.register('sw.js').then((reg) => {
     reg.addEventListener('updatefound', () => {
       const nw = reg.installing;
       nw?.addEventListener('statechange', () => {
         if (nw.state === 'installed' && navigator.serviceWorker.controller) {
-          toast('Există o versiune nouă a aplicației.', { action: 'Actualizează', onAction: () => nw.postMessage('skipWaiting'), duration: 20000 });
+          toast('Există o versiune nouă a aplicației.', { action: 'Actualizează', onAction: () => { updateRequested = true; nw.postMessage('skipWaiting'); }, duration: 20000 });
         }
       });
     });
     setInterval(() => reg.update().catch(() => {}), 60 * 60 * 1000);
   }).catch((e) => console.warn('SW', e));
-  let reloading = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => { if (!reloading) { reloading = true; location.reload(); } });
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (updateRequested) { updateRequested = false; location.reload(); }
+  });
 }
 
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; });

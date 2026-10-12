@@ -1,10 +1,10 @@
 // Offline support: the app itself is cached; clips are cached by the app (Cache Storage).
-const VERSION = '1.0.1';
+const VERSION = '1.1.0';
 const SHELL_CACHE = 'dansuri-shell-' + VERSION;
 const SHELL = [
   './', 'index.html', 'app.css', 'manifest.webmanifest',
   'js/main.js', 'js/config.js', 'js/util.js', 'js/icons.js', 'js/gh.js', 'js/store.js',
-  'js/media.js', 'js/ui.js', 'js/dnd.js', 'js/player.js', 'vendor/qrcode.mjs',
+  'js/media.js', 'js/ui.js', 'js/dnd.js', 'js/player.js', 'js/convert.js', 'vendor/qrcode.mjs',
   'fonts/bsd-latin.woff2', 'fonts/bsd-latin-ext.woff2',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
 ];

@@ -180,6 +180,17 @@ export function dateFromName(name, fallbackMs) {
   return { date: toLocalIso(new Date(fallbackMs || Date.now())), seq: 0 };
 }
 
+/**
+ * Stable id for a file. Up to 64 MB: SHA-256 of the whole file (as for the clips imported so far).
+ * Bigger files (4K): SHA-256 of their size plus three 4 MB slices, so a 1 GB clip isn't read into memory.
+ */
+export async function fileId(file) {
+  if (file.size <= 64 * 1024 * 1024) return (await sha256Hex(file)).slice(0, 16);
+  const S = 4 * 1024 * 1024, mid = Math.floor(file.size / 2);
+  const parts = [new TextEncoder().encode(`${file.size}:`), file.slice(0, S), file.slice(mid, mid + S), file.slice(file.size - S)];
+  return (await sha256Hex(new Blob(parts))).slice(0, 16);
+}
+
 export async function sha256Hex(blob) {
   const buf = await blob.arrayBuffer();
   const hash = await crypto.subtle.digest('SHA-256', buf);
