@@ -10,20 +10,23 @@ export function setupDnd(opts) {
   const { root } = opts;
   let s = null; // current gesture
   let suppressUntil = 0;
+  let suppressEl = null; // null = any element
   let lastPointerType = 'mouse';
 
   const now = () => performance.now();
-  const suppressClick = () => { suppressUntil = now() + 650; };
+  // Swallow the click the browser sends right after a long-press or a drop,
+  // without blocking a quick tap on another clip.
+  const suppressClick = (el = null, ms = 450) => { suppressUntil = now() + ms; suppressEl = el; };
 
   root.addEventListener('click', (e) => {
-    if (now() < suppressUntil) { e.stopPropagation(); e.preventDefault(); }
+    if (now() < suppressUntil && (!suppressEl || suppressEl.contains(e.target))) { e.stopPropagation(); e.preventDefault(); }
   }, true);
 
   root.addEventListener('contextmenu', (e) => {
     const el = e.target.closest('[data-drag]');
     if (!el || e.target.closest('[data-nodrag]')) return;
     e.preventDefault();
-    if (lastPointerType === 'mouse' && (!s || s.state !== 'dragging')) opts.onHold?.(info(el));
+    if (lastPointerType === 'mouse' && (!s || s.state !== 'dragging')) opts.onHold?.(info(el), { via: 'mouse' });
   });
 
   function info(el) {
@@ -62,8 +65,15 @@ export function setupDnd(opts) {
     if (e.type === 'touchcancel') return cancel();
     if (s.state === 'pressing') { clearTimeout(s.timer); s = null; return; }
     if (e.cancelable) e.preventDefault();
+    if (s.state === 'armed') {
+      const el = s.el;
+      suppressClick(el);
+      el.classList.remove('dnd-armed');
+      s = null;
+      opts.onHold?.(info(el), { via: 'touch' });
+      return;
+    }
     suppressClick();
-    if (s.state === 'armed') { const el = s.el; el.classList.remove('dnd-armed'); s = null; opts.onHold?.(info(el)); return; }
     if (s.state === 'dragging') drop();
   };
   document.addEventListener('touchend', touchEnd, { passive: false });

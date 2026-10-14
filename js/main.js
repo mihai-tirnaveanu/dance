@@ -182,18 +182,24 @@ function loadThumb(el) {
   media.thumbUrl(item, 1).then((url) => { if (url) { img.src = url; el.classList.add('has-img'); } }).catch(() => el.classList.add('no-img'));
 }
 
-function mediaTile(item) {
+function mediaTile(item, labels = null) {
   let el = tileCache.get(item.id);
   if (!el) {
+    const more = h('button', { class: 'tile-more', type: 'button', 'aria-label': 'Opțiuni pentru clip', dataset: { nodrag: '' } }, icon('more'));
+    more.addEventListener('click', (e) => { e.stopPropagation(); mediaMenu(el.dataset.id); });
     el = h('div', { class: 'tile', role: 'button', tabindex: '0', dataset: { drag: '', kind: 'media', id: item.id } },
-      h('img', { class: 'tile-img', alt: '', draggable: 'false', decoding: 'async' }),
-      h('span', { class: 'tile-shade' }),
-      h('span', { class: 'tile-name' }),
-      h('span', { class: 'tile-dur' }),
-      h('span', { class: 'tile-fav' }, icon('star', 'filled')),
-      h('span', { class: 'tile-check' }, icon('check')));
+      h('div', { class: 'tile-media' },
+        h('img', { class: 'tile-img', alt: '', draggable: 'false', decoding: 'async' }),
+        h('span', { class: 'tile-shade' }),
+        h('span', { class: 'tile-name' }),
+        h('span', { class: 'tile-dur' }),
+        h('span', { class: 'tile-fav' }, icon('star', 'filled')),
+        h('span', { class: 'tile-check' }, icon('check')),
+        more),
+      h('div', { class: 'tile-labels' }));
     el.addEventListener('click', () => onTileClick(el.dataset.id));
     el.addEventListener('keydown', (e) => {
+      if (e.target !== el) return;
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onTileClick(el.dataset.id); }
       else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) { e.preventDefault(); mediaMenu(el.dataset.id); }
     });
@@ -208,7 +214,12 @@ function mediaTile(item) {
   el.classList.toggle('fav', store.d.favSet.has(item.id));
   el.classList.toggle('selected', !!app.selection?.ids.has(item.id));
   el.classList.toggle('landscape', item.w > item.h);
-  el.setAttribute('aria-label', `${item.name || 'Clip fără nume'}, ${fmtDur(item.dur)}`);
+  // Subcategory labels under the clip (only in a category view that has subcategories).
+  const box = el.querySelector('.tile-labels');
+  box.replaceChildren(...(labels || []).map((c) => h('span', { class: 'tile-label', style: { '--c': c.color }, title: c.name }, c.name)));
+  el.classList.toggle('has-labels', !!labels?.length);
+  const where = labels?.length ? `, în ${labels.map((c) => c.name).join(', ')}` : '';
+  el.setAttribute('aria-label', `${item.name || 'Clip fără nume'}, ${fmtDur(item.dur)}${where}`);
   return el;
 }
 
@@ -219,13 +230,37 @@ function onTileClick(id) {
   openPlayer({ list, index: list.indexOf(id), app, title: app.ctx.title });
 }
 
-function grid(ids, listId) {
-  const g = h('div', { class: 'grid', dataset: { grid: listId } });
+function grid(ids, listId, labelsFor = null) {
+  const g = h('div', { class: 'grid' + (labelsFor ? ' with-labels' : ''), dataset: { grid: listId } });
   for (const id of ids) {
     const it = store.state.media[id];
-    if (it) g.append(mediaTile(it));
+    if (it) g.append(mediaTile(it, labelsFor ? labelsFor(id) : null));
   }
   return g;
+}
+
+/** Clips of a category and of all its subcategories: its own clips first, then the rest, in subcategory order. */
+function categoryClips(id) {
+  const d = store.d, s = store.state;
+  const out = [], seen = new Set();
+  const add = (cid) => {
+    for (const m of d.items(cid)) if (!seen.has(m)) { seen.add(m); out.push(m); }
+    for (const k of s.cats[cid]?.kids || []) add(k);
+  };
+  add(id);
+  return out;
+}
+
+/** The subcategories (below `id`) that a clip belongs to, with names relative to `id`. */
+function subLabels(id, mid) {
+  const d = store.d, s = store.state;
+  return (d.catOf[mid] || [])
+    .filter((c) => c !== id && d.isDescendant(c, id))
+    .map((c) => {
+      const path = d.path(c);
+      const rel = path.slice(path.findIndex((x) => x.id === id) + 1).map((x) => x.name).join(' › ');
+      return { id: c, name: rel, color: s.cats[c].color };
+    });
 }
 
 function setCtx(list, listId, title) { app.ctx = { list, listId, title }; }
@@ -309,8 +344,9 @@ function viewCategory(id) {
     return h('div', { class: 'view' }, appBar({ title: 'Categorie', back: true }),
       emptyState('Categoria nu mai există.', 'Poate a fost ștearsă de pe alt dispozitiv.', h('button', { class: 'btn btn-primary', onclick: () => nav('') }, 'Înapoi la categorii')));
   }
-  const items = d.items(id);
+  const items = categoryClips(id);
   setCtx(items, 'c:' + id, c.name);
+  const hasSubs = c.kids.length > 0;
   const path = d.path(id);
   const parentName = path.length > 1 ? path.slice(0, -1).map((x) => x.name).join(' › ') : null;
   const addSub = h('button', { class: 'poster mini poster-add', onclick: () => createCategory({ parent: id }) }, icon('plus'), h('span', null, 'Subcategorie'));
@@ -332,9 +368,9 @@ function viewCategory(id) {
     authBanner(),
     subs,
     h('div', { class: 'count-row' },
-      h('p', { class: 'count-line' }, clips(items.length) + (items.length > 1 && !lsGet('dansuri:moved') ? '. Ține apăsat pe un clip ca să-l muți.' : '')),
+      h('p', { class: 'count-line' }, clips(items.length) + (items.length > 1 && !lsGet('dansuri:moved') ? '. Ține apăsat pe un clip ca să-l selectezi, sau ține și trage ca să-l muți.' : '')),
       subs ? null : h('button', { class: 'btn btn-small btn-ghost', onclick: () => createCategory({ parent: id }) }, icon('plus'), 'Subcategorie')),
-    items.length ? grid(items, 'c:' + id) : emptyState('Niciun clip aici încă.',
+    items.length ? grid(items, 'c:' + id, hasSubs ? (mid) => subLabels(id, mid) : null) : emptyState('Niciun clip aici încă.',
       'Ține apăsat pe un clip din Nesortate sau din altă categorie și trage-l în bara de jos. Poți și încărca clipuri noi cu butonul +.',
       d.inbox.length ? h('button', { class: 'btn btn-secondary', onclick: () => nav('nesortate') }, `Deschide Nesortate (${d.inbox.length})`) : null));
 }
@@ -363,7 +399,7 @@ function viewList(kind) {
 
   let body;
   if (!ids.length) body = empty;
-  else if (kind === 'favs') body = [h('p', { class: 'count-line' }, clips(ids.length) + (ids.length > 1 && !lsGet('dansuri:moved') ? '. Ține apăsat ca să schimbi ordinea.' : '')), grid(ids, 'favs')];
+  else if (kind === 'favs') body = [h('p', { class: 'count-line' }, clips(ids.length) + (ids.length > 1 && !lsGet('dansuri:moved') ? '. Ține apăsat ca să selectezi, sau ține și trage ca să schimbi ordinea.' : '')), grid(ids, 'favs')];
   else body = groupedByDay(ids);
 
   return h('div', { class: 'view' },
@@ -447,6 +483,7 @@ function exitSelection(fromHistory = false) {
 function toggleSelect(id) {
   const ids = app.selection.ids;
   if (ids.has(id)) ids.delete(id); else ids.add(id);
+  if (!ids.size) return exitSelection();
   tileCache.get(id)?.classList.toggle('selected', ids.has(id));
   renderSelbar();
 }
@@ -504,7 +541,8 @@ function moveMedia(ids, toCat, { from = null, quiet = false } = {}) {
   const d = store.d;
   const ops = [];
   for (const id of ids) {
-    const sources = from ? [from] : d.catOf[id] || [];
+    // From a category view: out of that category and its subcategories (everything that view shows).
+    const sources = (d.catOf[id] || []).filter((c) => !from || c === from || d.isDescendant(c, from));
     for (const c of sources) if (c !== toCat) ops.push({ t: 'rm', l: 'c:' + c, id });
   }
   [...ids].reverse().forEach((id) => ops.push({ t: 'ins', l: 'c:' + toCat, id, i: 0 }));
@@ -521,8 +559,13 @@ function addMediaTo(ids, toCat) {
   undoToast(ids.length === 1 ? `Adăugat și în ${catName(toCat)}` : `${clips(ids.length)} adăugate în ${catName(toCat)}`, inv);
 }
 
-function removeFromCat(ids, cat) {
-  const inv = store.dispatch({ t: 'bulk', ops: ids.map((id) => ({ t: 'rm', l: 'c:' + cat, id })) });
+function removeFromCat(ids, cat, { only = false } = {}) {
+  const d = store.d;
+  const ops = [];
+  for (const id of ids) {
+    for (const c of d.catOf[id] || []) if (c === cat || (!only && d.isDescendant(c, cat))) ops.push({ t: 'rm', l: 'c:' + c, id });
+  }
+  const inv = store.dispatch({ t: 'bulk', ops });
   undoToast(ids.length === 1 ? `Scos din ${catName(cat)}` : `${clips(ids.length)} scoase din ${catName(cat)}`, inv);
 }
 
@@ -617,7 +660,8 @@ function mediaMenu(id, { fromPlayer = false } = {}) {
       { icon: 'move', label: 'Mută în…', onClick: () => pickCategory({ title: 'Mută în', exclude: inCat ? [inCat] : [], allowNew: true, mediaId: id }).then((cid) => cid && moveMedia([id], cid, { from: inCat })) },
       { icon: 'addto', label: 'Adaugă și în…', onClick: () => pickCategory({ title: 'Adaugă și în', exclude: d.catOf[id] || [], allowNew: true }).then((cid) => cid && addMediaTo([id], cid)) },
       canTop ? { icon: 'top', label: 'Mută primul', onClick: () => moveToTop(id, listId) } : null,
-      inCat ? { icon: 'remove', label: `Scoate din ${catName(inCat)}`, onClick: () => removeFromCat([id], inCat) } : null,
+      ...(inCat ? subLabels(inCat, id).map((c) => ({ icon: 'remove', label: `Scoate din ${c.name}`, onClick: () => removeFromCat([id], c.id, { only: true }) })) : []),
+      inCat ? { icon: 'remove', label: subLabels(inCat, id).length ? `Scoate din ${catName(inCat)} (cu subcategorii)` : `Scoate din ${catName(inCat)}`, onClick: () => removeFromCat([id], inCat) } : null,
       !fromPlayer && !app.selection ? { icon: 'select', label: 'Selectează mai multe', onClick: () => enterSelection([id]) } : null,
       { icon: 'download', label: 'Descarcă pe telefon', hint: 'pentru offline', onClick: () => media.prefetchVideo(it).then(() => toast('Clipul e descărcat pe acest dispozitiv')).catch((e) => toast('Descărcarea a eșuat: ' + e.message)) },
       { sep: true },
@@ -833,10 +877,12 @@ function initDnd() {
       const g = info.grid?.dataset.grid || 'none';
       return g === 'favs' || g.startsWith('c:') || g.startsWith('k:');
     },
-    onHold: (info) => {
+    onHold: (info, { via } = {}) => {
       haptic(10);
-      if (info.kind === 'media') mediaMenu(info.id);
-      else catMenu(info.id);
+      if (info.kind !== 'media') return catMenu(info.id);
+      if (via === 'mouse') return mediaMenu(info.id);
+      if (app.selection) toggleSelect(info.id);
+      else enterSelection([info.id]);
     },
     onStart: (info) => showTray(info),
     onMove: ({ y }) => {
