@@ -1,5 +1,5 @@
 // Offline support: the app itself is cached; clips are cached by the app (Cache Storage).
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 const SHELL_CACHE = 'dansuri-shell-' + VERSION;
 const SHELL = [
   './', 'index.html', 'app.css', 'manifest.webmanifest',

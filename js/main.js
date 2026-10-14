@@ -185,8 +185,6 @@ function loadThumb(el) {
 function mediaTile(item, labels = null) {
   let el = tileCache.get(item.id);
   if (!el) {
-    const more = h('button', { class: 'tile-more', type: 'button', 'aria-label': 'Opțiuni pentru clip', dataset: { nodrag: '' } }, icon('more'));
-    more.addEventListener('click', (e) => { e.stopPropagation(); mediaMenu(el.dataset.id); });
     el = h('div', { class: 'tile', role: 'button', tabindex: '0', dataset: { drag: '', kind: 'media', id: item.id } },
       h('div', { class: 'tile-media' },
         h('img', { class: 'tile-img', alt: '', draggable: 'false', decoding: 'async' }),
@@ -194,8 +192,7 @@ function mediaTile(item, labels = null) {
         h('span', { class: 'tile-name' }),
         h('span', { class: 'tile-dur' }),
         h('span', { class: 'tile-fav' }, icon('star', 'filled')),
-        h('span', { class: 'tile-check' }, icon('check')),
-        more),
+        h('span', { class: 'tile-check' }, icon('check'))),
       h('div', { class: 'tile-labels' }));
     el.addEventListener('click', () => onTileClick(el.dataset.id));
     el.addEventListener('keydown', (e) => {
@@ -473,12 +470,12 @@ function enterSelection(ids) {
   render();
 }
 function exitSelection(fromHistory = false) {
-  if (!app.selection) return;
+  if (!app.selection) return Promise.resolve();
   const sel = app.selection;
   app.selection = null;
   document.documentElement.classList.remove('selecting');
-  if (!fromHistory) sel.dismiss();
   render();
+  return fromHistory ? Promise.resolve() : sel.dismiss();
 }
 function toggleSelect(id) {
   const ids = app.selection.ids;
@@ -507,7 +504,8 @@ function renderSelbar() {
       selAction('star', 'Favorite', n, () => { favMany(ids); exitSelection(); }),
       route().name === 'cos'
         ? selAction('restore', 'Readu', n, () => { restoreMedia(ids); exitSelection(); })
-        : selAction('trash', 'Coș', n, () => { trashMedia(ids); exitSelection(); })));
+        : selAction('trash', 'Coș', n, () => { trashMedia(ids); exitSelection(); }),
+      n === 1 ? selAction('more', 'Mai multe', n, async () => { const id = ids[0]; await exitSelection(); mediaMenu(id); }) : null));
 }
 function selAction(ic, label, n, fn) {
   return h('button', { class: 'selbar-btn', disabled: !n, onclick: fn }, icon(ic), h('span', null, label));
